@@ -54,6 +54,21 @@
 
 #if defined(CONFIG_NET) && defined(CONFIG_NET_ROUTE)
 
+/*****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+#define IPV4_DEFAULT_ROUTE "0.0.0.0/0"
+#define IPV6_DEFAULT_ROUTE "::/0"
+
+#if defined(CONFIG_NET_IPv4) && defined(CONFIG_NET_IPv6)
+  #define MAX_DEFAULT_ROUTE_LEN sizeof(IPV4_DEFAULT_ROUTE)
+#elif defined(CONFIG_NET_IPv4)
+  #define MAX_DEFAULT_ROUTE_LEN sizeof(IPV4_DEFAULT_ROUTE)
+#else
+  #define MAX_DEFAULT_ROUTE_LEN sizeof(IPV6_DEFAULT_ROUTE)
+#endif
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -151,6 +166,8 @@ int cmd_addroute(FAR struct nsh_vtbl_s *vtbl, int argc, char **argv)
   int shift;
   int sockfd;
   int ret;
+  FAR char *sptr;
+  char default_route[MAX_DEFAULT_ROUTE_LEN];
 
   /* First, check if we are setting the default route */
 
@@ -169,7 +186,7 @@ int cmd_addroute(FAR struct nsh_vtbl_s *vtbl, int argc, char **argv)
           goto errout;
         }
 
-      /* Convert the target IP address string into its binary form */
+      /* Convert the router IP address string into its binary form */
 
 #ifdef CONFIG_NET_IPv4
       family = PF_INET;
@@ -196,7 +213,8 @@ int cmd_addroute(FAR struct nsh_vtbl_s *vtbl, int argc, char **argv)
           ret = netlib_set_dripv4addr(argv[3], &inaddr.ipv4);
           if (ret != 0)
             {
-              nsh_error(vtbl, g_fmtcmdfailed, argv[0]);
+              nsh_error(vtbl, g_fmtcmdfailed, argv[0],
+                        "netlib_set_dripv4addr", NSH_ERRNO);
               goto errout;
             }
         }
@@ -208,13 +226,40 @@ int cmd_addroute(FAR struct nsh_vtbl_s *vtbl, int argc, char **argv)
           ret = netlib_set_dripv6addr(argv[3], &inaddr.ipv6);
           if (ret != 0)
             {
-              nsh_error(vtbl, g_fmtcmdfailed, argv[0]);
+              nsh_error(vtbl, g_fmtcmdfailed, argv[0],
+                        "netlib_set_dripv4addr", NSH_ERRNO);
               goto errout;
             }
         }
 #endif
 
-      return OK;
+      /* Fixup arguments so that a valid route can be added to the table
+       *
+       * transform
+       *      addroute default <router> <ifname>
+       * into
+       *   IPv4
+       *      addroute 0.0.0.0/0 <router>
+       *   IPv6
+       *      addroute ::/0 <router>
+       */
+
+#ifdef CONFIG_NET_IPv4
+      if (family == PF_INET)
+        {
+          strcpy(default_route, IPV4_DEFAULT_ROUTE);
+        }
+#endif
+
+#ifdef CONFIG_NET_IPv6
+      if (family == PF_INET6)
+        {
+          strcpy(default_route, IPV6_DEFAULT_ROUTE);
+        }
+#endif
+
+      argv[1] = default_route;
+      argc = 3;
     }
 
   /* Check if slash notation is used with the target address */
@@ -255,15 +300,6 @@ int cmd_addroute(FAR struct nsh_vtbl_s *vtbl, int argc, char **argv)
           nsh_error(vtbl, g_fmtarginvalid, argv[0]);
           goto errout;
         }
-    }
-
-  /* We need to have a socket (any socket) in order to perform the ioctl */
-
-  sockfd = socket(family, NETLIB_SOCK_TYPE, 0);
-  if (sockfd < 0)
-    {
-      nsh_error(vtbl, g_fmtcmdfailed, argv[0], "socket", NSH_ERRNO);
-      goto errout;
     }
 
   /* Format the target sockaddr instance */
@@ -309,7 +345,7 @@ int cmd_addroute(FAR struct nsh_vtbl_s *vtbl, int argc, char **argv)
           if (shift > 32)
             {
               nsh_error(vtbl, g_fmtarginvalid, argv[0]);
-              goto errout_with_sockfd;
+              goto errout;
             }
 
           inaddr.ipv4.s_addr = htonl(0xffffffff << (32 - shift));
@@ -339,7 +375,7 @@ int cmd_addroute(FAR struct nsh_vtbl_s *vtbl, int argc, char **argv)
           if (shift > 16 || (shift > 0 && i >= 8))
             {
               nsh_error(vtbl, g_fmtarginvalid, argv[0]);
-              goto errout_with_sockfd;
+              goto errout;
             }
 
           /* /0   -> 0x0000
@@ -366,7 +402,7 @@ int cmd_addroute(FAR struct nsh_vtbl_s *vtbl, int argc, char **argv)
       if (ret != 1)
         {
           nsh_error(vtbl, g_fmtarginvalid, argv[0]);
-          goto errout_with_sockfd;
+          goto errout;
         }
 
       rtrndx = 3;
@@ -403,7 +439,7 @@ int cmd_addroute(FAR struct nsh_vtbl_s *vtbl, int argc, char **argv)
   if (ret != 1)
     {
       nsh_error(vtbl, g_fmtarginvalid, argv[0]);
-      goto errout_with_sockfd;
+      goto errout;
     }
 
   /* Format the router sockaddr instance */
@@ -430,6 +466,15 @@ int cmd_addroute(FAR struct nsh_vtbl_s *vtbl, int argc, char **argv)
              sizeof(struct in6_addr));
     }
 #endif
+
+  /* We need to have a socket (any socket) in order to perform the ioctl */
+
+  sockfd = socket(family, NETLIB_SOCK_TYPE, 0);
+  if (sockfd < 0)
+    {
+      goto errout;
+      nsh_error(vtbl, g_fmtcmdfailed, argv[0], "socket", NSH_ERRNO);
+    }
 
   /* Then add the route */
 
